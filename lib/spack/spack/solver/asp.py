@@ -2659,22 +2659,40 @@ class SpackSolverSetup:
     def define_version_constraints(self):
         """Define what version_satisfies(...) means in ASP logic."""
 
-        for pkg_name, versions in self.possible_versions.items():
-            for v in versions:
+        sorted_versions = {}
+        for pkg_name in self.possible_versions:
+            possible_versions = list(self.possible_versions[pkg_name])
+            possible_versions.sort()
+            sorted_versions[pkg_name] = possible_versions
+            for idx, v in enumerate(possible_versions):
+                self.gen.fact(fn.pkg_fact(pkg_name, fn.version_order(v, idx)))
                 if v in self.git_commit_versions[pkg_name]:
                     sha = self.git_commit_versions[pkg_name].get(v)
                     if sha:
                         self.gen.fact(fn.pkg_fact(pkg_name, fn.version_has_commit(v, sha)))
                     else:
                         self.gen.fact(fn.pkg_fact(pkg_name, fn.version_needs_commit(v)))
+            self.gen.newline()
         self.gen.newline()
 
         for pkg_name, versions in self.version_constraints:
-            # generate facts for each package constraint and the version
-            # that satisfies it
-            for v in self.possible_versions[pkg_name]:
+            possible_versions = sorted_versions.get(pkg_name)
+            if possible_versions is None:
+                continue
+            # Look for contiguous ranges of versions that satisfy the constraint
+            start_idx = None
+            for current_idx, v in enumerate(possible_versions):
                 if v.satisfies(versions):
-                    self.gen.fact(fn.pkg_fact(pkg_name, fn.version_satisfies(versions, v)))
+                    if start_idx is None:
+                        start_idx = current_idx
+                elif start_idx is not None:
+                    # End of a contiguous satisfying range found
+                    version_range = fn.version_range(versions, start_idx, current_idx - 1)
+                    self.gen.fact(fn.pkg_fact(pkg_name, version_range))
+                    start_idx = None
+            if start_idx is not None:
+                version_range = fn.version_range(versions, start_idx, len(possible_versions) - 1)
+                self.gen.fact(fn.pkg_fact(pkg_name, version_range))
             self.gen.newline()
 
     def collect_virtual_constraints(self):
