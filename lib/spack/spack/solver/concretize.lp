@@ -82,20 +82,18 @@ error(1, "Cannot have multiple nodes for {0} in the same unification set {1}", P
 unification_set("root", PackageNode) :- attr("root", PackageNode).
 unification_set(SetID, ChildNode) :- attr("depends_on", ParentNode, ChildNode, Type), Type != "build", unification_set(SetID, ParentNode).
 
-build_only_dependency(ParentNode, node(X, Child)) :-
-  attr("depends_on", ParentNode, node(X, Child), "build"),
-  not attr("depends_on", ParentNode, node(X, Child), "link"),
-  not attr("depends_on", ParentNode, node(X, Child), "run").
+% A separate unification set can be created if any of the build dependencies can be duplicated
+needs_build_unification_set(ParentNode) :- attr("depends_on", ParentNode, _, "build").
 
-unification_set(("build", node(X, Child)), node(X, Child))
-  :- build_only_dependency(ParentNode, node(X, Child)),
-     multiple_unification_sets(Child),
+% If any of the build dependencies can be duplicated, they can go into any ("build", ID) set
+unification_set(("build", ID), node(X, Child))
+  :- attr("depends_on", ParentNode, node(X, Child), "build"),
+     build_set_id(ParentNode, ID),
      unification_set(_, ParentNode).
 
-unification_set("generic_build", node(X, Child))
-  :- build_only_dependency(ParentNode, node(X, Child)),
-     not multiple_unification_sets(Child),
-     unification_set(_, ParentNode).
+% Limit the number of unification sets to a reasonable number to avoid combinatorial explosion
+#const max_build_unification_sets = 4.
+1 { build_set_id(ParentNode, 0..max_build_unification_sets-1) } 1 :- needs_build_unification_set(ParentNode).
 
 unification_set(SetID, VirtualNode)
   :- provider(PackageNode, VirtualNode),
@@ -2057,6 +2055,12 @@ opt_criterion(100, "number of nodes from the same package").
 #minimize { ID@100,Package : attr("node", node(ID, Package)), not self_build_requirement(_, node(ID, Package)) }.
 #minimize { ID@100,Package : attr("virtual_node", node(ID, Package)) }.
 #defined optimize_for_reuse/0.
+
+% Minimize the unification set ID used for build dependencies. This reduces the number of optimal
+% solutions that differ only by which node belongs to which unification set.
+opt_criterion(90, "build unification sets").
+#minimize{ 0@90: #true }.
+#minimize{ ID@90,ParentNode : build_set_id(ParentNode, ID) }.
 
 % Minimize the number of deprecated versions being used
 opt_criterion(73, "deprecated versions used").
