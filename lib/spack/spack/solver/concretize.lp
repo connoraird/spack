@@ -378,7 +378,6 @@ error(10, "Commit '{0}' must match package.py value '{1}' for '{2}@={3}'", Vsha,
 
 % A "condition_set(PackageNode, _)" is the set of nodes on which PackageNode can require / impose conditions
 condition_set(PackageNode, PackageNode) :- attr("node", PackageNode).
-condition_set(PackageNode, PackageNode) :- provider(PackageNode, VirtualNode).
 condition_set(PackageNode, VirtualNode) :- provider(PackageNode, VirtualNode).
 condition_set(PackageNode, DependencyNode) :- condition_set(PackageNode, PackageNode), depends_on(PackageNode, DependencyNode).
 condition_set(ID, VirtualNode) :- condition_set(ID, PackageNode), provider(PackageNode, VirtualNode).
@@ -1323,17 +1322,11 @@ variant_definition(node(NodeID, Package), Name, VariantID) :-
 % If there are any definitions for a variant on a node, the variant is "defined".
 variant_defined(PackageNode, Name) :- variant_definition(PackageNode, Name, _).
 
-% We must select one definition for each defined variant on a node.
-1 {
-  node_has_variant(PackageNode, Name, VariantID) : variant_definition(PackageNode, Name, VariantID)
-} 1 :-
-  variant_defined(PackageNode, Name).
-
 % Solver must pick the variant definition with the highest id. When conditions hold
 % for two or more variant definitions, this prefers the last one defined.
-:- node_has_variant(node(NodeID, Package), Name, SelectedVariantID),
-   variant_definition(node(NodeID, Package), Name, VariantID),
-   VariantID > SelectedVariantID.
+node_has_variant(PackageNode, Name, SelectedVariantID) :-
+  SelectedVariantID = #max { VariantID : variant_definition(PackageNode, Name, VariantID) },
+  variant_defined(PackageNode, Name).
 
 % B: Associating applicable package rules with nodes
 
@@ -1403,26 +1396,25 @@ variant_single_value(node(NodeID, Package), VariantName) :-
 % C: Determining variant values on each node
 
 % if a variant is sticky, but not set, its value is the default value
-attr("variant_selected", node(ID, Package), Variant, Value, VariantType, VariantID) :-
+attr("variant_value", node(ID, Package), Variant, Value) :-
   node_has_variant(node(ID, Package), Variant, VariantID),
   variant_default_value(node(ID, Package), Variant, Value),
   pkg_fact(Package, variant_sticky(VariantID)),
-  variant_type(VariantID, VariantType),
   not attr("variant_set", node(ID, Package), Variant),
   build(node(ID, Package)).
 
 % we can choose variant values from all the possible values for the node
 1 {
-  attr("variant_selected", PackageNode, Variant, Value, VariantType, VariantID)
-  : variant_possible_value(PackageNode, Variant, Value)
+  attr("variant_value", PackageNode, Variant, Value) : variant_possible_value(PackageNode, Variant, Value)
 } :-
-  node_has_variant(PackageNode, Variant, VariantID),
-  variant_type(VariantID, VariantType),
+  node_has_variant(PackageNode, Variant, _),
   build(PackageNode).
 
-% variant_selected is only needed for reconstruction on the python side, so we can ignore it here
-attr("variant_value", PackageNode, Variant, Value) :-
-  attr("variant_selected", PackageNode, Variant, Value, VariantType, VariantID).
+% variant_selected is only needed for reconstruction on the python side
+attr("variant_selected", PackageNode, Variant, Value, VariantType, VariantID) :-
+  attr("variant_value", PackageNode, Variant, Value),
+  node_has_variant(PackageNode, Variant, VariantID),
+  variant_type(VariantID, VariantType).
 
 % a variant cannot be set if it is not a variant on the package
 error(100, "Cannot set variant '{0}' for package '{1}' because the variant condition cannot be satisfied for the given spec", Variant, Package)
@@ -1572,10 +1564,9 @@ propagate(ChildNode, PropagatedAttribute, edge_types(DepType1, DepType2)) :-
 %----
 
 % If a variant is propagated, and can be accepted, set its value
-attr("variant_selected", PackageNode, Variant, Value, VariantType, VariantID) :-
+attr("variant_value", PackageNode, Variant, Value) :-
   propagate(PackageNode, variant_value(Variant, Value, _)),
-  node_has_variant(PackageNode, Variant, VariantID),
-  variant_type(VariantID, VariantType),
+  node_has_variant(PackageNode, Variant, _),
   variant_possible_value(PackageNode, Variant, Value).
 
 % If a variant is propagated, we cannot have extraneous values
@@ -1585,7 +1576,7 @@ variant_is_propagated(PackageNode, Variant) :-
   not attr("variant_set", PackageNode, Variant).
 
 :- variant_is_propagated(PackageNode, Variant),
-   attr("variant_selected", PackageNode, Variant, Value, _, _),
+   attr("variant_value", PackageNode, Variant, Value),
    not propagate(PackageNode, variant_value(Variant, Value, _)).
 
 error(100, "{0} and {1} cannot both propagate variant '{2}' to the shared dependency: {3}",
