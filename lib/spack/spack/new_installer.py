@@ -35,6 +35,7 @@ import threading
 import time
 import traceback
 import tty
+import warnings
 from gzip import GzipFile
 from multiprocessing import Pipe, Process
 from multiprocessing.connection import Connection
@@ -568,6 +569,26 @@ class JobServer:
         self.tokens_acquired -= 1
 
     def close(self) -> None:
+        if self.created and self.num_jobs > 1:
+            if self.tokens_acquired != 0:
+                # It's a non-fatal internal error to close the jobserver with acquired tokens.
+                warnings.warn("Spack failed to release jobserver tokens", stacklevel=2)
+            else:
+                # Verify that all build processes released the tokens they acquired.
+                total = self.num_jobs - 1
+                drained = self.acquire(total)
+                if drained != total:
+                    n = total - drained
+                    warnings.warn(
+                        f"{n} jobserver {'token was' if n == 1 else 'tokens were'} not released "
+                        "by the build processes. This can indicate that the build ran with "
+                        "limited parallelism.",
+                        stacklevel=2,
+                    )
+
+        self.r_conn.close()
+        self.w_conn.close()
+
         # Remove the FIFO if we created it.
         if self.created and self.fifo_path:
             try:
@@ -578,11 +599,6 @@ class JobServer:
                 os.rmdir(os.path.dirname(self.fifo_path))
             except OSError:
                 pass
-        # TODO: implement a sanity check here:
-        # 1. did we release all tokens we acquired?
-        # 2. if we created the jobserver, did the children return all tokens?
-        self.r_conn.close()
-        self.w_conn.close()
 
 
 def start_build(
@@ -1439,6 +1455,7 @@ class PackageInstaller:
             for child in self.running_builds.values():
                 child.proc.terminate()
             for child in self.running_builds.values():
+                jobserver.release()
                 child.proc.join()
             raise
         finally:
