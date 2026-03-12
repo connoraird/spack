@@ -46,6 +46,7 @@ from typing import (
     TYPE_CHECKING,
     Callable,
     Dict,
+    FrozenSet,
     Generator,
     List,
     NamedTuple,
@@ -169,6 +170,12 @@ def send_progress(current: int, total: int, state_pipe: io.TextIOWrapper) -> Non
     state_pipe.write("\n")
 
 
+def send_installed_from_binary_cache(state_pipe: io.TextIOWrapper) -> None:
+    """Send a notification that the package was installed from binary cache."""
+    json.dump({"installed_from_binary_cache": True}, state_pipe, separators=(",", ":"))
+    state_pipe.write("\n")
+
+
 def tee(control_r: int, log_r: int, file_w: int, parent_w: int) -> None:
     """Forward log_r to file_w and parent_w (if echoing is enabled).
     Echoing is enabled and disabled by reading from control_r."""
@@ -263,6 +270,9 @@ def install_from_buildcache(
     if hasattr(pkg, "_post_buildcache_install_hook"):
         pkg._post_buildcache_install_hook()
     pkg.installed_from_binary_cache = True
+
+    # inform also the parent that this package was installed from binary cache.
+    send_installed_from_binary_cache(state_stream)
 
     return True
 
@@ -641,6 +651,8 @@ def _install(
 
         for phase in spack.builder.create(pkg):
             send_state(phase.name, state_stream)
+            spack.llnl.util.tty.msg(f"{pkg.name}: Executing phase: '{phase.name}'")
+            sys.stdout.flush()
             phase.execute()
 
         _archive_build_metadata(pkg)
@@ -1330,7 +1342,7 @@ class BuildGraph:
         self.parent_to_child: Dict[str, Set[str]] = {}
         self.child_to_parent: Dict[str, Set[str]] = {}
         overwrite_set = overwrite_set or set()
-        specs_to_prune: Set[str] = set()
+        self.pruned: Set[str] = set()
         stack: List[Tuple[spack.spec.Spec, InstallPolicy]] = [
             (s, root_policy) for s in self.nodes.values()
         ]
@@ -1352,7 +1364,7 @@ class BuildGraph:
 
                 # Conditionally include build dependencies
                 if record and record.installed and key not in overwrite_set:
-                    specs_to_prune.add(key)
+                    self.pruned.add(key)
                     dependencies = spec.dependencies(deptype=dt.LINK | dt.RUN)
                 elif install_policy == "cache_only" and not include_build_deps:
                     dependencies = spec.dependencies(deptype=dt.LINK | dt.RUN)
@@ -1381,11 +1393,11 @@ class BuildGraph:
 
         # If we're not installing the package itself, mark root specs for pruning too
         if not install_package:
-            specs_to_prune.update(s.dag_hash() for s in specs)
+            self.pruned.update(s.dag_hash() for s in specs)
 
         # Prune specs from the build graph. Their parents become parents of their children and
         # their children become children of their parents.
-        for key in specs_to_prune:
+        for key in self.pruned:
             for parent in self.child_to_parent.get(key, ()):
                 self.parent_to_child[parent].remove(key)
                 self.parent_to_child[parent].update(self.parent_to_child.get(key, ()))
@@ -1566,6 +1578,98 @@ def schedule_builds(
     return ScheduleResult(blocked, to_start, newly_installed)
 
 
+def _node_to_roots(roots: List[spack.spec.Spec]) -> Dict[str, FrozenSet[str]]:
+    """Map each node in a graph to the set of root node DAG hashes that can reach it.
+
+    Args:
+        roots: List of root specs.
+
+    Returns:
+        A dictionary mapping each node's dag_hash to a frozenset of root dag_hashes.
+    """
+    node_to_roots: Dict[str, FrozenSet[str]] = {
+        s.dag_hash(): frozenset([s.dag_hash()]) for s in roots
+    }
+
+    for edge in spack.traverse.traverse_edges(
+        roots, order="topo", cover="edges", root=False, key=spack.traverse.by_dag_hash
+    ):
+        parent_roots = node_to_roots[edge.parent.dag_hash()]
+        child_hash = edge.spec.dag_hash()
+        existing = node_to_roots.get(child_hash)
+
+        if existing is None:
+            node_to_roots[child_hash] = parent_roots  # keep a reference if no mutation is needed
+        elif not parent_roots.issubset(existing):
+            node_to_roots[child_hash] = existing | parent_roots
+
+    return node_to_roots
+
+
+class ReportData:
+    """Data collected for reports during installation."""
+
+    def __init__(self, roots: List[spack.spec.Spec]):
+        self.roots = roots
+        self.build_records: Dict[str, spack.report.InstallRecord] = {}
+
+    def start_record(self, spec: spack.spec.Spec) -> None:
+        """Begin an InstallRecord for a spec that is about to be built."""
+        if spec.external:
+            return
+        record = spack.report.InstallRecord(spec)
+        record.start()
+        self.build_records[spec.dag_hash()] = record
+
+    def finish_record(self, spec: spack.spec.Spec, exitcode: int) -> None:
+        """Mark the InstallRecord for a spec as succeeded or failed."""
+        record = self.build_records.get(spec.dag_hash())
+        if record is None or spec.external:
+            return
+        if exitcode == 0:
+            record.succeed()
+        else:
+            record.fail(
+                spack.error.InstallError(
+                    f"Installation of {spec.name} failed; see log for details"
+                )
+            )
+
+    def finalize(
+        self, reports: Dict[str, spack.report.RequestRecord], build_graph: BuildGraph
+    ) -> None:
+        """Finalize InstallRecords and append them to RequestRecords after all builds finish.
+
+        Args:
+            reports: Map of root dag_hash to RequestRecord to append to.
+            build_graph: The build graph containing all nodes and their states.
+        """
+        node_to_roots = _node_to_roots(self.roots)
+
+        for spec in spack.traverse.traverse_nodes(self.roots):
+            h = spec.dag_hash()
+            if h in self.build_records:
+                record = self.build_records[h]
+            else:
+                record = spack.report.InstallRecord(spec)
+                if spec.external:
+                    msg = "Spec is external"
+                elif h in build_graph.pruned:
+                    msg = "Spec was not scheduled for installation"
+                elif h in build_graph.nodes:
+                    msg = "Dependencies failed to install"
+                else:
+                    # If not installed or failed (build_records), not statically pruned ahead of
+                    # time (build_graph.pruned), and also not scheduled (build_graph.nodes), it
+                    # means it was in pending_builds or running_builds but never started/finished.
+                    # This branch is followed on KeyboardInterrupt and --fail-fast.
+                    msg = "Installation was interrupted"
+                record.skip(msg=msg)
+
+            for root_hash in node_to_roots[h]:
+                reports[root_hash].append_record(record)
+
+
 class PackageInstaller:
 
     def __init__(
@@ -1673,7 +1777,11 @@ class PackageInstaller:
                 self.capacity = concurrent_packages_config
         else:
             self.capacity = concurrent_packages
-        self.reports: Dict[str, spack.report.RequestRecord] = {}
+
+        #: The reports property is what the old installer has and used as public interface.
+        self.reports = {spec.dag_hash(): spack.report.RequestRecord(spec) for spec in specs}
+        #: Internal data collected for reports during installation.
+        self.report_data = ReportData(specs)
 
     def install(self) -> None:
         self._installer()
@@ -1754,7 +1862,10 @@ class PackageInstaller:
                     self.capacity += 1
                     jobserver.release()
                     build.cleanup(selector)
-                    if build.proc.exitcode == 0:
+                    exitcode = build.proc.exitcode
+                    assert exitcode is not None, "Finished build should have exit code set"
+                    self.report_data.finish_record(build.spec, exitcode)
+                    if exitcode == 0:
                         # Add successful builds for database insertion (after a short delay)
                         finished_builds.append(build)
                         self.build_graph.enqueue_parents(
@@ -1889,6 +2000,11 @@ class PackageInstaller:
             if db_exc is not None:
                 raise db_exc
 
+        try:
+            self.report_data.finalize(self.reports, build_graph=self.build_graph)
+        except Exception as e:
+            spack.llnl.util.tty.debug(f"[{__name__}]: Failed to finalize reports: {e}]")
+
         if failures:
             for s in failures:
                 log_path = self.log_paths.get(s.dag_hash())
@@ -2020,6 +2136,7 @@ class PackageInstaller:
         self.build_status.add_build(
             child_info.spec, explicit=explicit, control_w_conn=child_info.control_w_conn
         )
+        self.report_data.start_record(spec)
 
     def _handle_child_logs(
         self, r_fd: int, child_info: ChildInfo, selector: selectors.BaseSelector
@@ -2078,3 +2195,5 @@ class PackageInstaller:
                 self.build_status.update_progress(
                     child_info.spec.dag_hash(), message["progress"], message["total"]
                 )
+            elif "installed_from_binary_cache" in message:
+                child_info.spec.package.installed_from_binary_cache = True
