@@ -255,7 +255,12 @@ def install_from_buildcache(
     state_stream: io.TextIOWrapper,
 ) -> bool:
     send_state("fetching from build cache", state_stream)
-    tarball_stage = spack.binary_distribution.download_tarball(spec.build_spec, unsigned, mirrors)
+    try:
+        tarball_stage = spack.binary_distribution.download_tarball(
+            spec.build_spec, unsigned, mirrors
+        )
+    except spack.binary_distribution.NoConfiguredBinaryMirrors:
+        return False
 
     if tarball_stage is None:
         return False
@@ -604,7 +609,7 @@ def _install(
 
     # Try to install from buildcache, unless user asked for source only
     if install_policy != "source_only":
-        if mirrors and install_from_buildcache(mirrors, spec, unsigned, state_stream):
+        if install_from_buildcache(mirrors, spec, unsigned, state_stream):
             spack.hooks.post_install(spec, explicit)
             return
         elif install_policy == "cache_only":
