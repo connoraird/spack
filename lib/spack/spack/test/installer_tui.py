@@ -73,6 +73,7 @@ def create_build_status(
     total: int = 0,
     verbose: bool = False,
     filter_padding: bool = False,
+    color: Optional[bool] = None,
 ) -> Tuple[BuildStatus, List[float], SimpleTextIOWrapper]:
     """Helper function to create BuildStatus with mocked dependencies"""
     fake_stdout = SimpleTextIOWrapper(tty=is_tty)
@@ -93,6 +94,7 @@ def create_build_status(
         is_tty=is_tty,
         verbose=verbose,
         filter_padding=filter_padding,
+        color=color,
     )
 
     return status, time_values, fake_stdout
@@ -964,6 +966,22 @@ class TestToggle:
         else:
             assert written == log_output
 
+    @pytest.mark.parametrize("filter_padding", [True, False])
+    def test_prefix_padding_filter_in_status(self, filter_padding):
+        """Test that prefix in status indicator applies padding filter."""
+        padded_prefix = "/base/__spack_path_placeholder__/__spack_path_placeholder__/mypackage"
+        status, _, fake_stdout = create_build_status(is_tty=False, filter_padding=filter_padding)
+        spec = MockSpec("mypackage", "1.0", prefix=padded_prefix)
+        status.add_build(spec, explicit=True, control_w_conn=MockConnection())
+        build_id = spec.dag_hash()
+        status.update_state(build_id, "finished")
+        output = fake_stdout.getvalue()
+        common = f"[+] {spec.dag_hash(7)} {spec.name}@{spec.version}"
+        if filter_padding:
+            assert output == f"{common} /base/[padded-to-59-chars]/mypackage\n"
+        else:
+            assert output == f"{common} {padded_prefix}\n"
+
 
 class TestSearchFilteringIntegration:
     """Test search mode with display filtering"""
@@ -1225,3 +1243,33 @@ class TestBuildStatusVerbose:
         with r_conn, w_conn:
             bs.add_build(spec, explicit=True, control_w_conn=w_conn)
             assert bs.tracked_build_id == ""
+
+
+class TestBuildStatusColor:
+    """Tests that BuildStatus respects the explicit color=True/False parameter."""
+
+    def test_non_tty_finished_color_true_emits_green(self):
+        """color=True in non-TTY mode: finished line has per-component ANSI colors."""
+        spec = MockSpec("pkg", "1.0")
+        status, _, stdout = create_build_status(is_tty=False, total=1, color=True)
+        status.add_build(spec, explicit=True)
+        status.update_state(spec.dag_hash(), "finished")
+        # green indicator, reset, dark-gray hash
+        assert stdout.getvalue().startswith("\033[32m[+]\033[0m \033[0;90m")
+
+    def test_non_tty_failed_color_true_emits_red(self):
+        """color=True in non-TTY mode: failed line has per-component ANSI colors."""
+        spec = MockSpec("pkg", "1.0")
+        status, _, stdout = create_build_status(is_tty=False, total=1, color=True)
+        status.add_build(spec, explicit=True)
+        status.update_state(spec.dag_hash(), "failed")
+        # red indicator, reset, dark-gray hash
+        assert stdout.getvalue().startswith("\033[31m[x]\033[0m \033[0;90m")
+
+    def test_non_tty_finished_color_false_no_ansi(self):
+        """color=False in non-TTY mode: finished line has no ANSI escape codes."""
+        spec = MockSpec("pkg", "1.0")
+        status, _, stdout = create_build_status(is_tty=False, total=1, color=False)
+        status.add_build(spec, explicit=True)
+        status.update_state(spec.dag_hash(), "finished")
+        assert "\033[" not in stdout.getvalue()
