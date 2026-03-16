@@ -1881,7 +1881,8 @@ class PackageInstaller:
 
                 stdin_ready = False
 
-                events = selector.select(timeout=SPINNER_INTERVAL)
+                timeout = SPINNER_INTERVAL if self.build_status.is_tty else DATABASE_WRITE_INTERVAL
+                events = selector.select(timeout=timeout)
 
                 finished_pids = []
 
