@@ -1497,8 +1497,7 @@ class Spec:
 
         Keyword arguments:
             external_path: prefix, if this is a spec for an external package
-            external_modules: list of external modules, if this is an external package
-                using modules.
+            external_modules: list of external modules, for an external package using modules
         """
         # Copy if spec_like is a Spec.
         if isinstance(spec_like, Spec):
