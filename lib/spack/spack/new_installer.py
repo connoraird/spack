@@ -1848,6 +1848,8 @@ class PackageInstaller:
         if sys.stdout.isatty():
             # Listen to terminal resizing events with self-pipe trick.
             sigwinch_r, sigwinch_w = os.pipe()
+            os.set_blocking(sigwinch_r, False)
+            os.set_blocking(sigwinch_w, False)
 
             def _handle_sigwinch(signum: int, frame: object) -> None:
                 try:
@@ -2198,6 +2200,8 @@ class PackageInstaller:
             # There might be more data than OUTPUT_BUFFER_SIZE, but we will read that in the next
             # iteration of the event loop to keep things responsive.
             data = os.read(r_fd, OUTPUT_BUFFER_SIZE)
+        except BlockingIOError:
+            return
         except OSError:
             data = None
 
@@ -2231,6 +2235,8 @@ class PackageInstaller:
             # There might be more data than OUTPUT_BUFFER_SIZE, but we will read that in the next
             # iteration of the event loop to keep things responsive.
             data = os.read(r_fd, OUTPUT_BUFFER_SIZE)
+        except BlockingIOError:
+            return
         except OSError:
             data = None
 
