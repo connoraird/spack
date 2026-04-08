@@ -8,6 +8,7 @@ import io
 import os
 import pathlib
 import shutil
+import sys
 from argparse import Namespace
 from typing import Any, Dict, Optional
 
@@ -4905,3 +4906,42 @@ spack:
         e.write()
         assert len(e.user_specs) == 0
         assert [s for s, _ in e.concretized_specs()] == [Spec("libdwarf")]
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Target is linux-specific")
+def test_compiler_target_env(mock_packages, environment_from_manifest):
+    """Tests that Spack doesn't drop flag definitions on compilers
+    when a target is required in config.
+    """
+
+    cflags = "-Wall"
+    env = environment_from_manifest(
+        f"""\
+spack:
+  specs:
+  - libdwarf %c=gcc@12.100.100
+  packages:
+    all:
+      require:
+      - "target=x86_64_v3"
+    gcc:
+      externals:
+      - spec: gcc@12.100.100 languages:=c,c++
+        prefix: /fake
+        extra_attributes:
+          compilers:
+            c: /fake/bin/gcc
+            cxx: /fake/bin/g++
+          flags:
+            cflags: {cflags}
+      require: "gcc"
+"""
+    )
+
+    with env:
+        env.concretize()
+        libdwarf = env.concrete_roots()[0]
+        assert libdwarf.satisfies("cflags=-Wall")
+        # Sanity check: make sure the target we expect was applied to the
+        # compiler entry
+        assert libdwarf["c"].satisfies("gcc@12.100.100 languages:=c,c++ target=x86_64_v3")
