@@ -302,7 +302,7 @@ def root(name):
 
 def exists(name):
     """Whether an environment with this name exists or not."""
-    return valid_env_name(name) and os.path.isdir(_root(name))
+    return valid_env_name(name) and os.path.lexists(os.path.join(_root(name), manifest_name))
 
 
 def active(name):
