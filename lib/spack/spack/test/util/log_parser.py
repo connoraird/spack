@@ -4,9 +4,10 @@
 
 import io
 import pathlib
+import re
 
 from spack.llnl.util.tty.color import color_when
-from spack.util.ctest_log_parser import CTestLogParser
+from spack.util.ctest_log_parser import CTestLogParser, _optimize_regexes
 from spack.util.log_parse import make_log_context
 
 
@@ -128,3 +129,53 @@ def test_log_parser_non_utf8_bytes(tmp_path: pathlib.Path):
     parser = CTestLogParser()
     errors, _ = parser.parse(str(log_file))
     assert len(errors) == 1
+
+
+class TestOptimizeRegexes:
+    def test_groups_by_first_char(self):
+        """Regexes sharing a first character are combined into one."""
+        result = _optimize_regexes(["bar", "far", "foo"])
+        assert len(result) == 2
+        assert result == ["bar", "far|foo"]
+
+    def test_singletons_unchanged(self):
+        """A regex that is the only one with its prefix is kept as-is."""
+        result = _optimize_regexes(["^unique pattern"])
+        assert result == ["^unique pattern"]
+
+    def test_escaping(self):
+        """Regexes starting with the same metacharacter are grouped too."""
+        result = _optimize_regexes(["\\(foo\\)", "\\(bar\\)", "\\*", "[abc]"])
+        assert len(result) == 3
+        assert "\\(bar\\)|\\(foo\\)" in result
+        assert "\\*" in result
+        assert "[abc]" in result
+
+    def test_semantics_preserved(self):
+        """Optimized regexes match the same strings as the originals."""
+        originals = [
+            "^FAIL: ",
+            "^FATAL: ",
+            "^failed ",
+            ": error",
+            ": warning",
+            "make: Fatal error",
+            "make\\[.*\\]: \\*\\*\\*",
+        ]
+        test_lines = [
+            "FAIL: test_something",
+            "FATAL: crash",
+            "failed to build",
+            "foo.c: error: syntax",
+            "foo.c: warning: unused",
+            "make: Fatal error in target",
+            "make[1]: *** Error 1",
+            "this matches nothing",
+        ]
+        compiled_orig = [re.compile(r) for r in originals]
+        compiled_opt = [re.compile(r) for r in _optimize_regexes(originals)]
+
+        for line in test_lines:
+            orig_match = any(r.search(line) for r in compiled_orig)
+            opt_match = any(r.search(line) for r in compiled_opt)
+            assert orig_match == opt_match, f"mismatch on {line!r}"
