@@ -13,6 +13,7 @@ import shutil
 import stat
 import warnings
 from collections.abc import KeysView
+from itertools import zip_longest
 from typing import (
     Any,
     Callable,
@@ -1573,34 +1574,45 @@ class Environment:
         """Returns true when the spec is built from local sources"""
         return spec.name in self.dev_specs
 
-    def apply_develop(self, spec: spack.spec.Spec, path: Optional[str] = None):
+    def apply_develop(self, specs: List[spack.spec.Spec], paths: Optional[List[str]] = None):
         """Mutate concrete specs to include dev_path provenance pointing to path.
 
         This will fail if any existing concrete spec for the same package does not satisfy the
 
         given develop spec."""
-        selector = spack.spec.Spec(spec.name)
+        selectors = []
+        mutators = []
+        msgs = []
 
-        mutator = spack.spec.Spec()
-        if path:
-            variant = vt.SingleValuedVariant("dev_path", path)
-        else:
-            variant = vt.VariantValueRemoval("dev_path")
-        mutator.variants["dev_path"] = variant
+        assert not paths or len(specs) == len(paths)
+        for spec, path in zip_longest(specs, paths or [], fillvalue=None):
+            assert spec
+            selector = spack.spec.Spec(spec.name)
 
-        msg = (
-            f"Develop spec '{spec}' conflicts with concrete specs in environment."
-            " Try again with 'spack develop --no-modify-concrete-specs'"
-            " and run 'spack concretize --force' to apply your changes."
-        )
-        self.mutate(selector, mutator, validator=spec, msg=msg)
+            mutator = spack.spec.Spec()
+            if path:
+                variant = vt.SingleValuedVariant("dev_path", path)
+            else:
+                variant = vt.VariantValueRemoval("dev_path")
+            mutator.variants["dev_path"] = variant
+
+            msg = (
+                f"Develop spec '{spec}' conflicts with concrete specs in environment."
+                " Try again with 'spack develop --no-modify-concrete-specs'"
+                " and run 'spack concretize --force' to apply your changes."
+            )
+            selectors.append(selector)
+            mutators.append(mutator)
+            msgs.append(msg)
+
+        self.mutate(selectors, mutators, validators=specs, msgs=msgs)
 
     def mutate(
         self,
-        selector: spack.spec.Spec,
-        mutator: spack.spec.Spec,
-        validator: Optional[spack.spec.Spec] = None,
-        msg: Optional[str] = None,
+        selectors: List[spack.spec.Spec],
+        mutators: List[spack.spec.Spec],
+        validators: Optional[List[spack.spec.Spec]] = None,
+        msgs: Optional[List[str]] = None,
     ):
         """Mutate concrete specs of an environment
 
@@ -1611,17 +1623,37 @@ class Environment:
         # Find all specs that this mutation applies to
         modify_specs = []
         modified_specs = []
+        if len(selectors) != len(mutators):
+            raise ValueError(
+                f"Length mismatch: selectors ({len(selectors)}) != mutators ({len(mutators)})"
+            )
+
+        if validators and len(validators) != len(selectors):
+            raise ValueError(
+                f"Length mismatch: validators ({len(validators)}) != selectors ({len(selectors)})"
+            )
+
+        if msgs and len(msgs) != len(selectors):
+            raise ValueError(
+                f"Length mismatch: msgs ({len(msgs)}) != selectors ({len(selectors)})"
+            )
+
         for dep in self.all_specs_generator():
-            if dep.satisfies(selector):
-                if not dep.satisfies(validator or selector):
-                    if not msg:
-                        msg = f"spec {dep} satisfies selector {selector}"
-                        msg += f" but not validator {validator}"
-                    raise SpackEnvironmentDevelopError(msg)
-                modify_specs.append(dep)
+            for selector, mutator, validator, msg in zip_longest(
+                selectors, mutators, validators or [], msgs or [], fillvalue=None
+            ):
+                assert selector
+                assert mutator
+                if dep.satisfies(selector):
+                    if not dep.satisfies(validator or selector):
+                        if not msg:
+                            msg = f"spec {dep} satisfies selector {selector}"
+                            msg += f" but not validator {validator}"
+                        raise SpackEnvironmentDevelopError(msg)
+                    modify_specs.append((dep, mutator))
 
         # Manipulate selected specs
-        for s in modify_specs:
+        for s, mutator in modify_specs:
             modified = s.mutate(mutator, rehash=False)
             if modified:
                 modified_specs.append(s)
