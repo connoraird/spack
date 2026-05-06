@@ -71,14 +71,19 @@ def test_location_source_dir_missing():
 
 
 @pytest.mark.parametrize(
-    "options",
-    [([]), (["--source-dir", "mpileaks"]), (["--env", "missing-env"]), (["spec1", "spec2"])],
+    "options,expected_code",
+    [
+        ([], 2),
+        (["--source-dir", "mpileaks"], 1),
+        (["--env", "missing-env"], 1),
+        (["spec1", "spec2"], 2),
+    ],
 )
-def test_location_cmd_error(options):
+def test_location_cmd_error(options, expected_code):
     """Ensure the proper error is raised with problematic location options."""
     with pytest.raises(spack.main.SpackCommandError) as e:
         location(*options)
-    assert e.value.code == 1
+    assert e.value.code == expected_code
 
 
 def test_location_env_exists(mutable_mock_env_path):
@@ -135,12 +140,13 @@ def test_location_paths_options(option, expected):
 
 @pytest.mark.parametrize(
     "specs,expected",
-    [([], "You must supply a spec."), (["spec1", "spec2"], "Too many specs.  Supply only one.")],
+    [([], "requires a spec"), (["spec1", "spec2"], "too many specs, supply only one")],
 )
 def test_location_spec_errors(specs, expected):
     """Tests spack location with bad spec options."""
-    error = "==> Error: %s" % expected
-    assert location(*specs, fail_on_error=False).strip() == error
+    output = location(*specs, fail_on_error=False)
+    assert expected in output
+    assert location.returncode == 2
 
 
 @pytest.mark.db
