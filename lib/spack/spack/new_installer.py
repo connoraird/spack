@@ -73,6 +73,7 @@ import spack.llnl.util.tty.color
 import spack.mirrors.mirror
 import spack.paths
 import spack.report
+import spack.sandbox
 import spack.spec
 import spack.stage
 import spack.store
@@ -223,7 +224,7 @@ def send_installed_from_binary_cache(state_pipe: io.TextIOWrapper) -> None:
     state_pipe.write("\n")
 
 
-def tee(control_r: int, log_r: int, log_path: str, parent_w: int) -> None:
+def tee(control_r: int, log_r: int, log_file: io.BufferedWriter, parent_w: int) -> None:
     """Forward log_r to file_w and parent_w (if echoing is enabled).
     Echoing is enabled and disabled by reading from control_r."""
     echo_on = False
@@ -232,7 +233,7 @@ def tee(control_r: int, log_r: int, log_path: str, parent_w: int) -> None:
     selector.register(control_r, selectors.EVENT_READ)
 
     try:
-        with open(log_path, "ab") as log_file, open(parent_w, "wb", closefd=False) as parent:
+        with log_file, open(parent_w, "wb", closefd=False) as parent:
             while True:
                 for key, _ in selector.select():
                     if key.fd == log_r:
@@ -270,10 +271,11 @@ class Tee:
         self.saved_fds = {fd: os.dup(fd) for fd in fds}
         #: The path of the log file
         self.log_path = log_path
+        log_file = open(self.log_path, "ab")
         r, w = os.pipe()
         self.tee_thread = threading.Thread(
             target=tee,
-            args=(self.control.fileno(), r, self.log_path, self.parent.fileno()),
+            args=(self.control.fileno(), r, log_file, self.parent.fileno()),
             daemon=True,
         )
         self.tee_thread.start()
@@ -668,6 +670,44 @@ def _archive_build_metadata(pkg: "spack.package_base.PackageBase") -> None:
         spack.llnl.util.tty.debug(e)
 
 
+def _enable_sandbox(config: dict, spec: spack.spec.Spec, stage_path: str) -> None:
+    if not config.get("enable", False):
+        return
+
+    try:
+        sandbox = spack.sandbox.get_sandbox()
+    except spack.sandbox.SandboxError as e:
+        raise spack.error.InstallError(f"Cannot enable build sandbox: {e}") from e
+
+    for dep in spec.traverse(root=False):
+        if not dep.external:
+            sandbox.allow_read(dep.prefix)
+
+    sandbox.allow_write(stage_path)
+    sandbox.allow_write(spec.prefix)
+
+    # POSIX prescribes /tmp and /dev/null are present. In the future we can consider setting
+    # TMPPATH to a sibling of the stage path to isolate concurrent builds better.
+    sandbox.allow_write(tempfile.gettempdir())
+    sandbox.allow_write(os.devnull)
+
+    # Allow read access to sbang, which might be needed to run build scripts.
+    sandbox.allow_read(os.path.join(spack.store.STORE.unpadded_root, "bin", "sbang"))
+    for upstream_db in spack.store.STORE.upstreams or []:
+        sandbox.allow_read(os.path.join(upstream_db.root, "bin", "sbang"))
+
+    # User-configured paths
+    for p in config.get("allow_read", []):
+        sandbox.allow_read(p)
+    for p in config.get("allow_write", []):
+        sandbox.allow_write(p)
+
+    try:
+        sandbox.apply(block_network=not config.get("allow_network", True))
+    except spack.sandbox.SandboxError as e:
+        raise spack.error.InstallError(f"Cannot enable build sandbox: {e}") from e
+
+
 def _install(
     spec: spack.spec.Spec,
     explicit: bool,
@@ -765,6 +805,8 @@ def _install(
             raise spack.error.InstallError(f"'{stop_before}' is not a valid phase for {pkg.name}")
         if stop_at is not None and stop_at not in builder.phases:
             raise spack.error.InstallError(f"'{stop_at}' is not a valid phase for {pkg.name}")
+
+        _enable_sandbox(spack.config.get("config:sandbox", {}), spec, stage.path)
 
         for phase in builder:
             if stop_before is not None and phase.name == stop_before:
