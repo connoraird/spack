@@ -68,12 +68,12 @@ from spack.llnl.util.lang import elide_list
 from spack.spec import EMPTY_SPEC
 from spack.util.compression import GZipFileType
 
+from .compat import default_clingo_control, make_error_control
 from .core import (
     AspFunction,
     AspVar,
     NodeId,
     SourceContext,
-    clingo,
     extract_args,
     fn,
     using_libc_compatibility,
@@ -106,15 +106,6 @@ class OutputConfiguration(NamedTuple):
 DEFAULT_OUTPUT_CONFIGURATION = OutputConfiguration(
     timers=False, stats=False, out=None, setup_only=False
 )
-
-
-def default_clingo_control():
-    """Return a control object with the default settings used in Spack"""
-    control = clingo().Control()
-    control.configuration.configuration = "tweety"
-    control.configuration.solver.heuristic = "Domain"
-    control.configuration.solver.opt_strategy = "usc"
-    return control
 
 
 # Below numbers are used to map names of criteria to the order
@@ -872,7 +863,7 @@ class ErrorHandler:
         if not initial_error_args:
             return
 
-        error_causation = clingo().Control()
+        error_causation = make_error_control()
 
         parent_dir = pathlib.Path(__file__).parent
         errors_lp = parent_dir / "error_messages.lp"
