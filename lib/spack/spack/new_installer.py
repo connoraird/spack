@@ -81,6 +81,7 @@ import spack.subprocess_context
 import spack.traverse
 import spack.url_buildcache
 import spack.util.environment
+import spack.util.gpg
 import spack.util.lock
 from spack.installer import _do_fake_install, dump_packages
 from spack.llnl.util.lang import pretty_duration
@@ -345,7 +346,14 @@ class GlobalState:
     but excludes the Spack environment, which is slow to serialize and should not be needed
     during the build."""
 
-    __slots__ = ("store", "config", "monkey_patches", "spack_working_dir", "repo_cache")
+    __slots__ = (
+        "store",
+        "config",
+        "monkey_patches",
+        "spack_working_dir",
+        "repo_cache",
+        "gnupg_home",
+    )
 
     def __init__(self):
         if multiprocessing.get_start_method() == "fork":
@@ -354,6 +362,7 @@ class GlobalState:
         self.store = spack.store.STORE
         self.monkey_patches = spack.subprocess_context.TestPatches.create()
         self.spack_working_dir = spack.paths.spack_working_dir
+        self.gnupg_home = str(spack.util.gpg.GNUPGHOME) if spack.util.gpg.GNUPGHOME else None
 
     def restore(self):
         if multiprocessing.get_start_method() == "fork":
@@ -366,6 +375,9 @@ class GlobalState:
             opener.urlopen._instance = None
             s3_client_cache.clear()
             return
+        if self.gnupg_home:
+            spack.util.gpg.GPG = spack.util.gpg.Gpg(self.gnupg_home)
+            spack.util.gpg.GNUPGHOME = spack.util.gpg.GPG.home
         spack.store.STORE = self.store
         spack.config.CONFIG = self.config
         self.monkey_patches.restore()
