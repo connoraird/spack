@@ -316,6 +316,10 @@ class BinaryIndexCache:
         """
         return list(self._mirrors_for_spec.get(dag_hash, []))
 
+    def __contains__(self, dag_hash: str) -> bool:
+        """Returns True if *dag_hash* is known to be available in at least one buildcache."""
+        return dag_hash in self._mirrors_for_spec
+
     def update_spec(self, spec: spack.spec.Spec, found_list: List[MirrorMetadata]) -> None:
         """Update the cache with a new list of mirrors for a given spec."""
         spec_dag_hash = spec.dag_hash()
@@ -2249,6 +2253,14 @@ def update_cache_and_get_specs():
     """
     BINARY_INDEX.update()
     return BINARY_INDEX.get_all_built_specs()
+
+
+def load_buildcache_index() -> None:
+    """Populates BINARY_INDEX from the local on-disk index cache and never raises exceptions."""
+    try:
+        BINARY_INDEX.regenerate_spec_cache()
+    except Exception:
+        pass
 
 
 def get_keys(
