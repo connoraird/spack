@@ -109,7 +109,7 @@ import spack.version
 import spack.version as vn
 import spack.version.git_ref_lookup
 
-from .enums import InstallRecordStatus, PropagationPolicy
+from .enums import PropagationPolicy
 
 __all__ = [
     "CompilerSpec",
@@ -2298,73 +2298,6 @@ class Spec:
     def dag_hash_bit_prefix(self, bits):
         """Get the first <bits> bits of the DAG hash as an integer type."""
         return spack.util.hash.base32_prefix_bits(self.dag_hash(), bits)
-
-    def _lookup_hash(self):
-        """Lookup just one spec with an abstract hash, returning a spec from the the environment,
-        store, or finally, binary caches."""
-        from spack.binary_distribution import BinaryCacheQuery
-        from spack.environment import active_environment
-        from spack.store import STORE
-
-        active_env = active_environment()
-
-        # First env, then store, then binary cache
-        matches = (
-            (active_env.all_matching_specs(self) if active_env else [])
-            or STORE.db.query(self, installed=InstallRecordStatus.ANY)
-            or BinaryCacheQuery(True)(self)
-        )
-
-        if not matches:
-            raise InvalidHashError(self, self.abstract_hash)
-
-        if len(matches) != 1:
-            raise AmbiguousHashError(
-                f"Multiple packages specify hash beginning '{self.abstract_hash}'.", *matches
-            )
-
-        return matches[0]
-
-    def lookup_hash(self):
-        """Given a spec with an abstract hash, return a copy of the spec with all properties and
-        dependencies by looking up the hash in the environment, store, or finally, binary caches.
-        This is non-destructive."""
-        if self.concrete or not any(node.abstract_hash for node in self.traverse()):
-            return self
-
-        spec = self.copy(deps=False)
-        # root spec is replaced
-        if spec.abstract_hash:
-            spec._dup(self._lookup_hash())
-            return spec
-
-        # Map the dependencies that need to be replaced
-        node_lookup = {
-            id(node): node._lookup_hash()
-            for node in self.traverse(root=False)
-            if node.abstract_hash
-        }
-
-        # Reconstruct dependencies
-        for edge in self.traverse_edges(root=False):
-            key = edge.parent.name
-            current_node = spec if key == spec.name else spec[key]
-            child_node = node_lookup.get(id(edge.spec), edge.spec.copy())
-            current_node._add_dependency(
-                child_node, depflag=edge.depflag, virtuals=edge.virtuals, direct=edge.direct
-            )
-
-        return spec
-
-    def replace_hash(self):
-        """Given a spec with an abstract hash, attempt to populate all properties and dependencies
-        by looking up the hash in the environment, store, or finally, binary caches.
-        This is destructive."""
-
-        if not any(node for node in self.traverse(order="post") if node.abstract_hash):
-            return
-
-        self._dup(self.lookup_hash())
 
     def to_node_dict(self, hash: ht.SpecHashDescriptor = ht.dag_hash) -> Dict[str, Any]:
         """Create a dictionary representing the state of this Spec.
