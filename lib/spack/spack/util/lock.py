@@ -68,6 +68,16 @@ class Lock(Llnl_lock):
         if self._enable:
             super()._unlock()
 
+    def try_acquire_read(self) -> bool:
+        if self._enable:
+            return super().try_acquire_read()
+        return True
+
+    def try_acquire_write(self) -> bool:
+        if self._enable:
+            return super().try_acquire_write()
+        return True
+
     def cleanup(self, *args) -> None:
         if self._enable:
             super().cleanup(*args)
