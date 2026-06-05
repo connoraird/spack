@@ -1178,6 +1178,27 @@ spack:
     assert mpileaks_clang["mpich"].satisfies("%[virtuals=fortran] gcc")
 
 
+def test_matrix_exclude_from_environment_manifest(tmp_path: pathlib.Path, mutable_config):
+    """Tests that matrix excludes are preserved when the environment manifest is read."""
+    spack_yaml = """
+spack:
+  definitions:
+  - packages: [foo, bar]
+  specs:
+  - matrix:
+    - [$packages]
+    exclude:
+    - "bar"
+"""
+    manifest = tmp_path / "spack.yaml"
+    manifest.write_text(spack_yaml)
+
+    e = ev.Environment(tmp_path)
+
+    assert e.manifest.user_specs() == [{"matrix": [["$packages"]], "exclude": ["bar"]}]
+    assert e.user_specs.specs == [spack.spec.Spec("foo")]
+
+
 @pytest.mark.parametrize("unify", ["true", "false", "when_possible"])
 @pytest.mark.parametrize("requirement_type", ["require", "prefer"])
 def test_using_toolchain_as_requirement(
