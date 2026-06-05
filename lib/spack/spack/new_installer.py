@@ -20,8 +20,6 @@ output to both a log file and the UI process (if the UI process has requested it
 runs an event loop to listen for control messages from the UI process (to enable/disable echoing
 of logs), and for output from the build process."""
 
-import codecs
-import fcntl
 import glob
 import io
 import json
@@ -33,11 +31,9 @@ import shutil
 import signal
 import sys
 import tempfile
-import termios
 import threading
 import time
 import traceback
-import tty
 import warnings
 from gzip import GzipFile
 from multiprocessing import Pipe, Process
@@ -81,11 +77,18 @@ import spack.util.environment
 import spack.util.lock
 from spack.installer import _do_fake_install, dump_packages
 from spack.llnl.util.lang import pretty_duration
-from spack.llnl.util.tty.log import _is_background_tty, ignore_signal
+from spack.new_installer_terminal import BaseTerminalState, StdinReaderBase
 from spack.subprocess_context import GlobalStateMarshaler
 from spack.util.executable import ProcessError
 from spack.util.log_parse import make_log_context, parse_log_events
 from spack.util.path import padding_filter, padding_filter_bytes
+
+if sys.platform == "win32":
+    from spack.new_installer_windows import WindowsTerminalState as TerminalState
+else:
+    import fcntl
+
+    from spack.new_installer_posix import PosixTerminalState as TerminalState
 
 if TYPE_CHECKING:
     import spack.package_base
@@ -2199,143 +2202,6 @@ class NullReportData(ReportData):
         pass
 
 
-class TerminalState:
-    """Manages terminal settings, stdin selector registration, and suspend/resume signals.
-
-    Installs a SIGTSTP handler that restores the terminal before suspending and re-applies it
-    on resume. After waking up it checks whether the process is in the foreground or background
-    and enables or suppresses interactive output accordingly.
-
-    Optional ``on_suspend`` / ``on_resume`` hooks are called just before the process suspends
-    and just after it wakes, allowing callers to pause and resume child processes."""
-
-    def __init__(
-        self,
-        selector: selectors.BaseSelector,
-        build_status: BuildStatus,
-        on_suspend: Optional[Callable[[], None]] = None,
-        on_resume: Optional[Callable[[], None]] = None,
-    ) -> None:
-        self.selector = selector
-        self.build_status = build_status
-        self.on_suspend = on_suspend
-        self.on_resume = on_resume
-        self.old_stdin_settings = termios.tcgetattr(sys.stdin)
-        self.sigwinch_r = -1
-        self.sigwinch_w = -1
-
-    def setup(self) -> None:
-        """Set cbreak mode, register stdin and signal pipes in the selector."""
-
-        # SIGWINCH self-pipe (stdout must be a tty too)
-        if sys.stdout.isatty():
-            self.sigwinch_r, self.sigwinch_w = os.pipe()
-            os.set_blocking(self.sigwinch_r, False)
-            os.set_blocking(self.sigwinch_w, False)
-            self.selector.register(self.sigwinch_r, selectors.EVENT_READ, "sigwinch")
-            self.old_sigwinch = signal.signal(signal.SIGWINCH, self._handle_sigwinch)
-        else:
-            self.old_sigwinch = None
-
-        self.old_sigtstp = signal.signal(signal.SIGTSTP, self._handle_sigtstp)
-
-        # Start correctly depending on whether we're foregrounded or backgrounded
-        self.build_status.headless = True
-        if not _is_background_tty(sys.stdin):
-            self.enter_foreground()
-
-    def teardown(self) -> None:
-        """Restore terminal settings and signal handlers, close pipes."""
-        with ignore_signal(signal.SIGTTOU):
-            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self.old_stdin_settings)
-
-        for sig, old in ((signal.SIGTSTP, self.old_sigtstp), (signal.SIGWINCH, self.old_sigwinch)):
-            if old is not None:
-                try:
-                    signal.signal(sig, old)
-                except Exception as e:
-                    spack.llnl.util.tty.debug(f"Failed to restore signal handler for {sig}: {e}")
-
-        if sys.stdin.fileno() in self.selector.get_map():
-            self.selector.unregister(sys.stdin.fileno())
-
-        for fd in (self.sigwinch_r, self.sigwinch_w):
-            if fd < 0:
-                continue
-            if fd in self.selector.get_map():
-                self.selector.unregister(fd)
-            try:
-                os.close(fd)
-            except Exception as e:
-                spack.llnl.util.tty.debug(f"Failed to close sigwinch pipe {fd}: {e}")
-
-    def _handle_sigtstp(self, signum: int, frame: object) -> None:
-        """Restore terminal before suspending, then re-install handler after resume."""
-
-        # Reset so the first redraw after resume doesn't overwrite the shell's
-        # prompt / "$ fg" line.
-        self.build_status.active_area_rows = 0
-
-        # Restore terminal so the user's shell works normally while we're stopped.
-        with ignore_signal(signal.SIGTTOU):
-            termios.tcsetattr(sys.stdin, termios.TCSANOW, self.old_stdin_settings)
-
-        # Force headless mode before suspending so that enter_foreground() doesn't
-        # exit early when we resume, ensuring terminal settings are re-applied.
-        self.build_status.headless = True
-
-        # Actually suspend: reset to default handler then re-send SIGTSTP.
-        if self.on_suspend is not None:
-            self.on_suspend()
-        signal.signal(signal.SIGTSTP, signal.SIG_DFL)
-        os.kill(os.getpid(), signal.SIGTSTP)
-
-        # Execution resumes here after SIGCONT. Re-install our handler.
-        signal.signal(signal.SIGTSTP, self._handle_sigtstp)
-
-        if self.on_resume is not None:
-            self.on_resume()
-        self.handle_continue()
-
-    def _handle_sigwinch(self, signum: int, frame: object) -> None:
-        try:
-            os.write(self.sigwinch_w, b"\x00")
-        except OSError:
-            pass
-
-    def enter_foreground(self) -> None:
-        """Restore interactive terminal mode."""
-        if not self.build_status.headless:
-            return
-
-        # We save old settings right before applying cbreak.
-        # If we started in the background, bash may have had the terminal in its own
-        # readline (raw) mode when __init__ ran. Waiting until we are foregrounded
-        # ensures we capture the shell's exported 'sane' configuration for this job.
-        self.old_stdin_settings = termios.tcgetattr(sys.stdin)
-
-        with ignore_signal(signal.SIGTTOU):
-            tty.setcbreak(sys.stdin.fileno())
-
-        if sys.stdin.fileno() not in self.selector.get_map():
-            self.selector.register(sys.stdin.fileno(), selectors.EVENT_READ, "stdin")
-        self.build_status.headless = False
-        self.build_status.dirty = True
-
-    def enter_background(self) -> None:
-        """Suppress output and stop reading stdin to avoid SIGTTIN/SIGTTOU."""
-        if sys.stdin.fileno() in self.selector.get_map():
-            self.selector.unregister(sys.stdin.fileno())
-        self.build_status.headless = True
-
-    def handle_continue(self) -> None:
-        """Detect whether the process is in the foreground or background and adjust accordingly."""
-        if _is_background_tty(sys.stdin):
-            self.enter_background()
-        else:
-            self.enter_foreground()
-
-
 def _signal_children(running_builds: Dict[int, ChildInfo], sig: signal.Signals) -> None:
     """Send a signal to the process group of each running build."""
     for child in running_builds.values():
@@ -2345,28 +2211,6 @@ def _signal_children(running_builds: Dict[int, ChildInfo], sig: signal.Signals) 
                 os.killpg(pid, sig)
         except OSError:
             pass
-
-
-class StdinReader:
-    """Helper class to do non-blocking, incremental decoding of stdin, stripping ANSI escape
-    sequences. The input is the backing file descriptor for stdin (instead of the TextIOWrapper) to
-    avoid double buffering issues: the event loop triggers when the fd is ready to read, and if we
-    do a partial read from the TextIOWrapper, it will likely drain the fd and buffer the remainder
-    internally, which the event loop is not aware of, and user input doesn't come through."""
-
-    def __init__(self, fd: int) -> None:
-        self.fd = fd
-        #: Handle multi-byte UTF-8 characters
-        self.decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-        #: For stripping out arrow and navigation keys
-        self.ansi_escape_re = re.compile(r"\x1b\[[0-9;]*[A-Za-z~]")
-
-    def read(self) -> str:
-        try:
-            chars = self.decoder.decode(os.read(self.fd, 1024))
-            return self.ansi_escape_re.sub("", chars)
-        except OSError:
-            return ""
 
 
 class PackageInstaller:
@@ -2480,6 +2324,7 @@ class PackageInstaller:
             len(self.build_graph.nodes),
             verbose=verbose,
             filter_padding=spack.store.STORE.has_padding(),
+            is_tty=TerminalState.stdout_is_interactive(),
         )
         self.jobs = spack.config.determine_number_of_jobs(parallel=True)
         self.build_status.actual_jobs = self.jobs
@@ -2513,10 +2358,9 @@ class PackageInstaller:
         selector = selectors.DefaultSelector()
 
         # Set up terminal handling (cbreak, signals, stdin registration)
-        terminal: Optional[TerminalState] = None
-        stdin_reader: Optional[StdinReader] = None
-        if sys.stdin.isatty():
-            stdin_reader = StdinReader(sys.stdin.fileno())
+        terminal: Optional[BaseTerminalState] = None
+        stdin_reader: Optional[StdinReaderBase] = None
+        if TerminalState.stdin_is_interactive():
             terminal = TerminalState(
                 selector,
                 self.build_status,
@@ -2524,6 +2368,7 @@ class PackageInstaller:
                 on_resume=lambda: _signal_children(self.running_builds, signal.SIGCONT),
             )
             terminal.setup()
+            stdin_reader = terminal.create_stdin_reader()
 
         # Finished builds that have not yet been written to the database.
         database_actions: List[DatabaseAction] = []
@@ -2579,7 +2424,7 @@ class PackageInstaller:
                 # handler, but there's no SIGCONT event in the transition of background to
                 # foreground, so we conditionally poll for that here (headless case). In the
                 # headless case the event loop only fires once per second, so this is cheap enough.
-                if terminal and self.build_status.headless and not _is_background_tty(sys.stdin):
+                if terminal and self.build_status.headless and terminal.should_enter_foreground():
                     terminal.enter_foreground()
 
                 for key, _ in events:
@@ -2597,7 +2442,7 @@ class PackageInstaller:
                         stdin_ready = True
                     elif data == "sigwinch":
                         assert terminal is not None
-                        os.read(terminal.sigwinch_r, 64)  # drain the pipe
+                        terminal.drain_sigwinch()
                         self.build_status.on_resize()
                     elif data == "jobserver" and not jobserver.has_target_parallelism():
                         jobserver.maybe_discard_tokens()
@@ -2666,9 +2511,11 @@ class PackageInstaller:
                 # Finally update the UI
                 self.build_status.update()
         finally:
-            # First ensure that the user's terminal state is restored.
+            # Restore input settings and signal handlers. On POSIX this runs TCSADRAIN,
+            # ensuring buffered cursor-movement codes from the event loop are transmitted
+            # before the final render.
             if terminal is not None:
-                terminal.teardown()
+                terminal.teardown_input()
 
             # Flush any not-yet-written successful builds to the DB; save the exception on error
             # to be re-raised after best-effort cleanup.
@@ -2719,6 +2566,11 @@ class PackageInstaller:
                 jobserver.close()
             except Exception:
                 pass
+
+            # Restore output settings. On Linux this is a no-op. On Windows this disables
+            # VT100 processing and must happen after the final render.
+            if terminal is not None:
+                terminal.teardown_output()
 
             # Re-raise the DB exception if any.
             if db_exc is not None:
