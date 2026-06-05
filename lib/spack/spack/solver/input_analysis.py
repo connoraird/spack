@@ -459,9 +459,9 @@ class MinimalDuplicatesCounter(NoDuplicatesCounter):
         )
         self._possible_virtuals.update(virtuals)
         self._link_run_virtuals.update(virtuals)
-        for x in self._link_run:
+        if self._link_run:
             reals, virtuals, _ = self.possible_graph.possible_dependencies(
-                x, allowed_deps=dt.BUILD, transitive=False, strict_depflag=True
+                *self._link_run, allowed_deps=dt.BUILD, transitive=False, strict_depflag=True
             )
             self._possible_virtuals.update(virtuals)
             self._direct_build.update(reals)
