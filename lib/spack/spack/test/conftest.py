@@ -1379,11 +1379,11 @@ class ConfigUpdate:
         spack.config.set("modules:default", config_settings)
         mock_config = MockConfig(config_settings, self.writer_key)
 
-        self.monkeypatch.setattr(spack.modules.common, "configuration", mock_config.configuration)
+        conf_cls = getattr(self.writer_mod, self.writer_key.capitalize() + "Configuration")
         self.monkeypatch.setattr(
-            self.writer_mod, "configuration", mock_config.writer_configuration
+            conf_cls, "configuration", staticmethod(mock_config.writer_configuration)
         )
-        self.monkeypatch.setattr(self.writer_mod, "configuration_registry", {})
+        self.monkeypatch.setattr(conf_cls, "_registry", {})
 
 
 @pytest.fixture()
