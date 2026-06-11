@@ -657,6 +657,23 @@ class Database:
         """Get a read lock context manager for use in a ``with`` block."""
         return self._read_transaction_impl(self.lock, acquire=self._read)
 
+    def try_write_transaction(self) -> lk.TryWriteTransaction:
+        """Non-blocking variant of :meth:`write_transaction`: the context manager yields True if
+        the write lock was acquired (the database is re-read from disk on entry and written back on
+        exit, unless an exception occurred), or False if acquiring the lock would block, in which
+        case the body must skip its work."""
+        if not isinstance(self.lock, lk.Lock):
+            raise ForbiddenLockError("Cannot acquire a write lock on an upstream database")
+        return lk.TryWriteTransaction(self.lock, acquire=self._read, release=self._write)
+
+    def try_read_transaction(self) -> lk.TryReadTransaction:
+        """Non-blocking variant of :meth:`read_transaction`: the context manager yields True if the
+        read lock was acquired (the database is re-read from disk on entry), or False if acquiring
+        the lock would block, in which case the body must skip its work."""
+        if not isinstance(self.lock, lk.Lock):
+            raise ForbiddenLockError("Cannot acquire a read lock on an upstream database")
+        return lk.TryReadTransaction(self.lock, acquire=self._read)
+
     def _write_to_file(self, stream):
         """Write out the database in JSON format to the stream passed
         as argument.
