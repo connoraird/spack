@@ -87,7 +87,6 @@ import spack.deptypes as dt
 import spack.error
 import spack.hash_types as ht
 import spack.llnl.path
-import spack.llnl.string
 import spack.llnl.util.filesystem as fs
 import spack.llnl.util.lang as lang
 import spack.llnl.util.tty as tty
@@ -104,6 +103,7 @@ import spack.util.hash
 import spack.util.prefix
 import spack.util.spack_json as sjson
 import spack.util.spack_yaml as syaml
+import spack.util.string
 import spack.variant as vt
 import spack.version
 import spack.version as vn
@@ -5247,9 +5247,9 @@ def substitute_abstract_variants(spec: Spec):
         spec.variants.substitute(new_variant)
 
     if unknown:
-        variants = spack.llnl.string.plural(len(unknown), "variant")
+        variants = spack.util.string.plural(len(unknown), "variant")
         raise vt.UnknownVariantError(
-            f"Tried to set {variants} {spack.llnl.string.comma_and(unknown)}. "
+            f"Tried to set {variants} {spack.util.string.comma_and(unknown)}. "
             f"{spec.name} has no such {variants}",
             unknown_variants=unknown,
         )
@@ -5880,7 +5880,7 @@ class InvalidDependencyError(spack.error.SpecError):
     def __init__(self, pkg, deps):
         self.invalid_deps = deps
         super().__init__(
-            "Package {0} does not depend on {1}".format(pkg, spack.llnl.string.comma_or(deps))
+            "Package {0} does not depend on {1}".format(pkg, spack.util.string.comma_or(deps))
         )
 
 

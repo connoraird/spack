@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING, Callable, Dict, Generator, Iterable, List, Opt
 import spack.caches
 import spack.config
 import spack.error
-import spack.llnl.string
 import spack.llnl.util.lang
 import spack.llnl.util.tty as tty
 import spack.oci.image
@@ -27,6 +26,7 @@ import spack.util.crypto
 import spack.util.lock
 import spack.util.parallel
 import spack.util.path as sup
+import spack.util.string
 import spack.util.url as url_util
 from spack import fetch_strategy as fs  # breaks a cycle
 from spack.llnl.util.filesystem import (
@@ -1099,16 +1099,16 @@ def interactive_version_filter(
             header = []
             if len(orig_url_dict) > 0 and len(sorted_and_filtered) == len(orig_url_dict):
                 header.append(
-                    f"Selected {spack.llnl.string.plural(len(sorted_and_filtered), 'version')}"
+                    f"Selected {spack.util.string.plural(len(sorted_and_filtered), 'version')}"
                 )
             else:
                 header.append(
                     f"Selected {len(sorted_and_filtered)} of "
-                    f"{spack.llnl.string.plural(len(orig_url_dict), 'version')}"
+                    f"{spack.util.string.plural(len(orig_url_dict), 'version')}"
                 )
             if sorted_and_filtered and known_versions:
                 num_new = sum(1 for v in sorted_and_filtered if v not in known_versions)
-                header.append(f"{spack.llnl.string.plural(num_new, 'new version')}")
+                header.append(f"{spack.util.string.plural(num_new, 'new version')}")
             if has_filter:
                 header.append(colorize(f"Filtered by {VERSION_COLOR}@@{version_filter}@."))
 
