@@ -25,9 +25,9 @@ import spack.util.spack_yaml as syaml
 from spack.build_environment import UseMode, _static_to_shared_library, dso_suffix
 from spack.enums import Context
 from spack.installer import PackageInstaller
-from spack.llnl.util.filesystem import HeaderList, LibraryList
 from spack.util.environment import EnvironmentModifications
 from spack.util.executable import Executable
+from spack.util.filesystem import HeaderList, LibraryList
 from spack.util.path import Path, convert_to_platform_path
 
 

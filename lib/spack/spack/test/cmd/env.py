@@ -20,7 +20,6 @@ import spack.config
 import spack.environment as ev
 import spack.environment.depfile as depfile
 import spack.error
-import spack.llnl.util.filesystem as fs
 import spack.llnl.util.tty as tty
 import spack.main
 import spack.modules
@@ -33,13 +32,13 @@ import spack.solver.asp
 import spack.stage
 import spack.store
 import spack.util.environment
+import spack.util.filesystem as fs
 import spack.util.link_tree
 import spack.util.spack_json as sjson
 import spack.util.spack_yaml
 from spack.cmd.env import _env_create
 from spack.config import substitute_path_variables
 from spack.installer import PackageInstaller
-from spack.llnl.util.filesystem import readlink
 from spack.llnl.util.lang import dedupe
 from spack.main import SpackCommand, SpackCommandError
 from spack.spec import Spec
@@ -47,6 +46,7 @@ from spack.stage import stage_prefix
 from spack.test.conftest import RepoBuilder
 from spack.traverse import traverse_nodes
 from spack.util.executable import Executable
+from spack.util.filesystem import readlink
 from spack.version import Version
 
 # TODO-27021
