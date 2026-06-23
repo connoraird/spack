@@ -32,7 +32,6 @@ import spack.config
 import spack.error
 import spack.util.executable
 import spack.util.parallel
-import spack.util.path
 import spack.util.url
 import spack.util.url as url_util
 from spack.llnl.util import lang, tty
@@ -193,7 +192,7 @@ def custom_ssl_certs() -> Optional[Tuple[bool, str]]:
     ssl_certs = spack.config.get("config:ssl_certs")
     if not ssl_certs:
         return None
-    path = spack.util.path.substitute_path_variables(ssl_certs)
+    path = spack.config.substitute_path_variables(ssl_certs)
     if not os.path.isabs(path):
         tty.debug(f"certs: relative path not allowed: {path}")
         return None
