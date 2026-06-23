@@ -68,6 +68,19 @@ class TestLmod:
         module, spec = factory("libelf%clang@15.0.0")
         assert "Core" in module.layout.available_path_parts
 
+    @pytest.mark.parametrize("modules_config", ["core_compilers", "core_compilers_at_equal"])
+    def test_compiler_built_with_core_compiler_is_in_core(
+        self, modules_config, module_configuration, factory
+    ):
+        """A compiler package built with a core compiler must itself land in Core/.
+
+        Without this the hierarchy is broken: the user loads Core/clang/15.0.0,
+        which should reveal Core/gcc/10.2.1 (not Compiler/clang/15.0.0/gcc/10.2.1).
+        """
+        module_configuration(modules_config)
+        module, spec = factory("gcc@10.2.1%clang@15.0.0")
+        assert "Core" in module.layout.available_path_parts
+
     def test_file_layout(self, compiler, provider, factory, module_configuration):
         """Tests the layout of files in the hierarchy is the one expected."""
         module_configuration("complex_hierarchy")
@@ -322,14 +335,14 @@ class TestLmod:
         module_configuration("missing_core_compilers")
 
         module, spec = factory(mpileaks_spec_string)
-        with pytest.raises(spack.modules.lmod.CoreCompilersNotFoundError):
+        with pytest.raises(spack.modules.common.CoreCompilersNotFoundError):
             module.write()
 
         # Here we have an empty list
         module_configuration("core_compilers_empty")
 
         module, spec = factory(mpileaks_spec_string)
-        with pytest.raises(spack.modules.lmod.CoreCompilersNotFoundError):
+        with pytest.raises(spack.modules.common.CoreCompilersNotFoundError):
             module.write()
 
     def test_conflicts(self, modulefile_content, module_configuration):
@@ -413,12 +426,12 @@ class TestLmod:
         if spec.target.family != spec.target:
             assert str(spec.target) not in writer.layout.arch_dirname
 
-    def test_projections_specific(self, factory, module_configuration):
+    def test_projections_specific_hierarchical(self, factory, module_configuration):
         """Tests reading the correct naming scheme."""
 
         # This configuration has no error, so check the conflicts directives
         # are there
-        module_configuration("projections")
+        module_configuration("projections_hierarchical")
 
         # Test we read the expected configuration for the naming scheme
         writer, _ = factory("mpileaks")
@@ -428,12 +441,12 @@ class TestLmod:
         projection = writer.spec.format(writer.conf.projections["mpileaks"])
         assert projection in writer.layout.use_name
 
-    def test_projections_all(self, factory, module_configuration):
+    def test_projections_all_hierarchical(self, factory, module_configuration):
         """Tests reading the correct naming scheme."""
 
         # This configuration has no error, so check the conflicts directives
         # are there
-        module_configuration("projections")
+        module_configuration("projections_hierarchical")
 
         # Test we read the expected configuration for the naming scheme
         writer, _ = factory("libelf")
@@ -551,3 +564,45 @@ class TestLmod:
         assert len([x for x in content if hide_cmd == x]) == 1
         assert len([x for x in content if hide_cmd_alt1 == x]) == 0
         assert len([x for x in content if hide_cmd_alt2 == x]) == 1
+
+    def test_naming_scheme_compat(self, factory, module_configuration):
+        """Tests backwards compatibility for naming_scheme key"""
+        module_configuration("naming_scheme")
+
+        # Test we read the expected configuration for the naming scheme
+        writer, _ = factory("mpileaks")
+        expected = {"all": "{name}/{version}-{compiler.name}"}
+
+        assert writer.conf.projections == expected
+        projection = writer.spec.format(writer.conf.projections["all"])
+        assert projection in writer.layout.use_name
+
+    def test_projections_specific_non_hierarchical(self, factory, module_configuration):
+        """Tests reading the correct naming scheme."""
+
+        # This configuration has no error, so check the conflicts directives
+        # are there
+        module_configuration("projections_non_hierarchical")
+
+        # Test we read the expected configuration for the naming scheme
+        writer, _ = factory("mpileaks")
+        expected = {"all": "{name}/{version}-{compiler.name}", "mpileaks": "{name}-mpiprojection"}
+
+        assert writer.conf.projections == expected
+        projection = writer.spec.format(writer.conf.projections["mpileaks"])
+        assert projection in writer.layout.use_name
+
+    def test_projections_all_non_hierarchical(self, factory, module_configuration):
+        """Tests reading the correct naming scheme."""
+
+        # This configuration has no error, so check the conflicts directives
+        # are there
+        module_configuration("projections_non_hierarchical")
+
+        # Test we read the expected configuration for the naming scheme
+        writer, _ = factory("libelf")
+        expected = {"all": "{name}/{version}-{compiler.name}", "mpileaks": "{name}-mpiprojection"}
+
+        assert writer.conf.projections == expected
+        projection = writer.spec.format(writer.conf.projections["all"])
+        assert projection in writer.layout.use_name
