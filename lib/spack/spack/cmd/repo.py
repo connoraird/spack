@@ -208,6 +208,9 @@ def setup_parser(subparser: argparse.ArgumentParser):
         "--only-redistributable", action="store_true", help="exclude non-redistributable packages"
     )
     show_version_updates_parser.add_argument(
+        "--no-deprecated", action="store_true", help="exclude deprecated versions"
+    )
+    show_version_updates_parser.add_argument(
         "repository", help="name or path of the repository to analyze"
     )
     show_version_updates_parser.add_argument(
@@ -667,11 +670,7 @@ def repo_show_version_updates(args):
 
     # Filter out manual packages if requested
     if args.no_manual_packages:
-        pkgs = {
-            pkg_name
-            for pkg_name in pkgs
-            if not spack.repo.PATH.get_pkg_class(pkg_name).manual_download
-        }
+        pkgs = {pkg_name for pkg_name in pkgs if not repo.get_pkg_class(pkg_name).manual_download}
 
     if not pkgs:
         tty.info("No packages were added or changed between the specified refs", stream=sys.stderr)
@@ -681,8 +680,8 @@ def repo_show_version_updates(args):
     specs_to_output = []
 
     for pkg_name in pkgs:
-        pkg_cls = spack.repo.PATH.get_pkg_class(pkg_name)
-        path = spack.repo.PATH.package_path(pkg_name)
+        pkg_cls = repo.get_pkg_class(pkg_name)
+        path = repo.filename_for_package_name(pkg_name)
 
         # Get all versions with checksums or commits
         version_to_checksum: Dict[StandardVersion, str] = {}
@@ -711,7 +710,7 @@ def repo_show_version_updates(args):
         specs_to_output = [
             spec
             for spec in specs_to_output
-            if "commit" not in spack.repo.PATH.get_pkg_class(spec.name).versions[spec.version]
+            if "commit" not in repo.get_pkg_class(spec.name).versions[spec.version]
         ]
 
     # Filter out non-redistributable packages if requested
@@ -719,7 +718,15 @@ def repo_show_version_updates(args):
         specs_to_output = [
             spec
             for spec in specs_to_output
-            if spack.repo.PATH.get_pkg_class(spec.name).redistribute_source(spec)
+            if repo.get_pkg_class(spec.name).redistribute_source(spec)
+        ]
+
+    # Filter out deprecated versions if requested
+    if args.no_deprecated:
+        specs_to_output = [
+            spec
+            for spec in specs_to_output
+            if not repo.get_pkg_class(spec.name).versions[spec.version].get("deprecated", False)
         ]
 
     if not specs_to_output:
