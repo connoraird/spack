@@ -2,37 +2,9 @@
 #
 # SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-import os
-from typing import ClassVar, Dict, Tuple
+from typing import Tuple
 
-from .common import BaseConfiguration, BaseContext, BaseFileLayout, BaseModuleFileWriter
-
-
-class LmodFileLayout(BaseFileLayout):
-    """File layout for lmod module files."""
-
-    #: file extension of lua module files
-    extension = "lua"
-
-    @property
-    def modulerc(self) -> str:
-        """Returns the modulerc file associated with current module file"""
-        return os.path.join(os.path.dirname(self.filename), f".modulerc.{self.extension}")
-
-
-class LmodContext(BaseContext):
-    """Context class for lmod module files."""
-
-    def _manipulate_path(self, token: str) -> str:
-        if token in self.conf.hierarchy_tokens:
-            return "{0}_name, {0}_version".format(token)
-        return '"' + token + '"'
-
-    def _format_condition(self, services_needed: Tuple[str, ...]) -> str:
-        return " and ".join([x + "_name" for x in services_needed])
-
-    def _join_path(self, parts: Tuple[str, ...]) -> str:
-        return ", ".join([self._manipulate_path(x) for x in parts])
+from .common import BaseConfiguration, BaseModuleFileWriter
 
 
 class LmodConfiguration(BaseConfiguration):
@@ -40,9 +12,18 @@ class LmodConfiguration(BaseConfiguration):
 
     module_system = "lmod"
     _default_hierarchical = True
-    _registry: ClassVar[Dict] = {}
-    layout_class = LmodFileLayout
-    context_class = LmodContext
+    file_extension = "lua"
+
+    def manipulate_path(self, token: str) -> str:
+        if token in self.hierarchy_tokens:
+            return "{0}_name, {0}_version".format(token)
+        return '"' + token + '"'
+
+    def format_condition(self, services_needed: Tuple[str, ...]) -> str:
+        return " and ".join([x + "_name" for x in services_needed])
+
+    def join_path(self, parts: Tuple[str, ...]) -> str:
+        return ", ".join([self.manipulate_path(token) for token in parts])
 
 
 class LmodModulefileWriter(BaseModuleFileWriter):
